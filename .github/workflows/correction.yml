@@ -1,0 +1,202 @@
+# ==========================================
+# PIPELINE DE SEGURANÇA DEVSECOPS
+# ==========================================
+# Esta pipeline garante que código com senhas
+# ou secrets NUNCA chegue à produção!
+# ==========================================
+
+name: DevSecOps Security Pipeline
+
+# ------------------------------------------
+# GATILHOS: Quando esta pipeline executa?
+# ------------------------------------------
+on:
+  push:
+    branches: [ main, master ]
+    # Executa a cada commit na branch principal
+    
+  pull_request:
+    branches: [ main, master ]
+    # Executa quando alguém abre um Pull Request
+
+# ==========================================
+# JOBS: Trabalhos executados pela pipeline
+# ==========================================
+jobs:
+
+  # ========================================
+  # JOB 1: VERIFICAÇÃO DE SEGURANÇA
+  # ========================================
+  # Este job escaneia o código em busca de:
+  # - Senhas hardcoded
+  # - API Keys
+  # - Tokens de acesso
+  # - Chaves AWS, Stripe, Google, etc
+  # ========================================
+  
+  security-scan:
+    name: Security Check
+    runs-on: ubuntu-latest
+    # Executa em uma máquina virtual Linux
+    
+    steps:
+      # ------------------------------------
+      # PASSO 1: Baixar o código do GitHub
+      # ------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          # Baixa todo o histórico (não só o último commit)
+      
+      # ------------------------------------
+      # PASSO 2: Instalar ferramenta Gitleaks
+      # ------------------------------------
+      # Gitleaks é a ferramenta que detecta secrets
+      - name: Install Gitleaks
+        run: |
+          wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
+          tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+      
+      # ------------------------------------
+      # PASSO 3: ESCANEAR POR SECRETS
+      # ------------------------------------
+      # Este é o CORAÇÃO da segurança!
+      # Aqui verificamos se há senhas no código
+      - name: Scan for secrets
+        run: |
+          echo "Starting security scan..."
+          
+          # Executa o Gitleaks para detectar secrets
+          gitleaks detect --source . --report-format json --report-path gitleaks-report.json || SCAN_FAILED=true
+          
+          # Verifica o resultado:
+          if [ "$SCAN_FAILED" = "true" ]; then
+            # SE ENCONTROU SECRETS:
+            echo "================================"
+            echo "❌ SECURITY ALERT: Secrets detected!"
+            echo "================================"
+            echo ""
+            echo "Report details:"
+            cat gitleaks-report.json
+            echo ""
+            echo "================================"
+            echo "🚫 DEPLOY BLOQUEADO POR SEGURANÇA"
+            echo "================================"
+            exit 1
+            # exit 1 = PARA TUDO e marca como FALHA
+          else
+            # SE NÃO ENCONTROU SECRETS:
+            echo "================================"
+            echo "✅ No secrets detected!"
+            echo "✅ Code approved!"
+            echo "✅ Proceeding to build..."
+            echo "================================"
+          fi
+      
+      # ------------------------------------
+      # PASSO 4: Salvar relatório de segurança
+      # ------------------------------------
+      # Se houver falha, salva o relatório para análise
+      - name: Upload security report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: gitleaks-report.json
+
+  # ========================================
+  # JOB 2: BUILD E TESTES
+  # ========================================
+  # Este job só executa se a segurança passar!
+  # Aqui fazemos o build e deploy da aplicação
+  # ========================================
+  
+  build-and-test:
+    name: Build and Test
+    
+    needs: security-scan
+    # ⚠️ IMPORTANTE: "needs" significa que este job
+    # SÓ EXECUTA se "security-scan" passar!
+    # Esta linha BLOQUEIA código inseguro!
+    
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ------------------------------------
+      # PASSO 1: Baixar código novamente
+      # ------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      # ------------------------------------
+      # PASSO 2: Configurar Python
+      # ------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      # ------------------------------------
+      # PASSO 3: Instalar dependências
+      # ------------------------------------
+      - name: Install dependencies
+        run: |
+          echo "📦 Instalando dependências..."
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          echo "✅ Dependências instaladas!"
+      
+      # ------------------------------------
+      # PASSO 4: Executar aplicação
+      # ------------------------------------
+      # Se chegou até aqui, o código é SEGURO!
+      - name: Run application
+        env:
+          # Variáveis de ambiente (secrets do GitHub)
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+          AWS_SECRET_KEY: ${{ secrets.AWS_SECRET_KEY }}
+        run: |
+          echo "================================"
+          echo "🚀 INICIANDO DEPLOY"
+          echo "================================"
+          echo ""
+          echo "📋 Executando configurações..."
+          python config.py
+          echo ""
+          echo "🎯 Executando aplicação..."
+          python app.py
+          echo ""
+          echo "================================"
+          echo "✅ DEPLOY REALIZADO COM SUCESSO!"
+          echo "================================"
+
+# ==========================================
+# FLUXO COMPLETO DA PIPELINE:
+# ==========================================
+#
+# 1. COMMIT → Pipeline inicia automaticamente
+#
+# 2. JOB 1 (Security Check):
+#    ├─ Instala Gitleaks
+#    ├─ Escaneia TODO o código
+#    ├─ Encontrou senha? → PARA TUDO ❌
+#    └─ Não encontrou? → Continua ✅
+#
+# 3. JOB 2 (Build and Test):
+#    └─ SÓ executa se Job 1 passou
+#    ├─ Configura ambiente Python
+#    ├─ Instala dependências
+#    ├─ Carrega secrets do GitHub
+#    ├─ Executa config.py
+#    ├─ Executa app.py
+#    └─ Deploy concluído! 🚀
+#
+# ==========================================
+# RESULTADO:
+# ✅ Código com senhas = BLOQUEADO
+# ✅ Código seguro = VAI PARA PRODUÇÃO
+# ==========================================
